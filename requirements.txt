@@ -6,4 +6,5 @@ chromadb
 faiss-cpu
 sentence-transformers
 gitpython
-ollama
+groq
+langchain-groq
