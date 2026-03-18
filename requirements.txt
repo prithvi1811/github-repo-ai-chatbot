@@ -1,6 +1,8 @@
 streamlit
 langchain
 langchain-community
+langchain-chroma
+chromadb
 faiss-cpu
 sentence-transformers
 gitpython
