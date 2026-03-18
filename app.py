@@ -1,180 +1,255 @@
-import os
-import shutil
+import time
 import streamlit as st
-import requests
 
-from git import Repo
-from langchain_community.document_loaders import GitLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_core.embeddings import Embeddings
-from sentence_transformers import SentenceTransformer
+st.set_page_config(
+    page_title="GitHub Repository AI Chatbot",
+    page_icon="🤖",
+    layout="wide",
+)
 
-CHROMA_PATH = "./chroma_db"
-LOCAL_REPO_PATH = "./repo"
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3.2"
+# ----------------------------
+# Session state
+# ----------------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "repo_indexed" not in st.session_state:
+    st.session_state.repo_indexed = False
+if "repo_url" not in st.session_state:
+    st.session_state.repo_url = ""
+if "indexed_repo_name" not in st.session_state:
+    st.session_state.indexed_repo_name = ""
 
+# ----------------------------
+# Styling
+# ----------------------------
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 1100px;
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
 
-class LocalSentenceTransformerEmbeddings(Embeddings):
-    def __init__(self):
-        self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    .main-title {
+        font-size: 2.6rem;
+        font-weight: 700;
+        margin-bottom: 0.4rem;
+    }
 
-    def embed_documents(self, texts):
-        return self.model.encode(texts, normalize_embeddings=True).tolist()
+    .sub-title {
+        color: #9ca3af;
+        font-size: 1rem;
+        margin-bottom: 1.2rem;
+    }
 
-    def embed_query(self, text):
-        return self.model.encode(text, normalize_embeddings=True).tolist()
+    .status-pill {
+        display: inline-block;
+        padding: 0.35rem 0.8rem;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
+        border: 1px solid transparent;
+    }
 
+    .status-ready {
+        background: rgba(16, 185, 129, 0.12);
+        color: #34d399;
+        border-color: rgba(16, 185, 129, 0.25);
+    }
 
-def clone_repo(repo_url):
-    if os.path.exists(LOCAL_REPO_PATH):
-        shutil.rmtree(LOCAL_REPO_PATH)
-    Repo.clone_from(repo_url, LOCAL_REPO_PATH)
+    .status-waiting {
+        background: rgba(250, 204, 21, 0.10);
+        color: #facc15;
+        border-color: rgba(250, 204, 21, 0.25);
+    }
 
+    .helper-card {
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        padding: 1rem 1.1rem;
+        background: rgba(255,255,255,0.02);
+        margin-top: 1rem;
+        margin-bottom: 1rem;
+    }
 
-def load_documents():
-    loader = GitLoader(
-        repo_path=LOCAL_REPO_PATH,
-        branch="main"
-    )
-    docs = loader.load()
+    .empty-state {
+        border: 1px dashed rgba(255,255,255,0.12);
+        border-radius: 16px;
+        padding: 1.25rem;
+        color: #9ca3af;
+        text-align: center;
+        margin-top: 1rem;
+    }
 
-    for doc in docs:
-        source = doc.metadata.get("file_path") or doc.metadata.get("source") or ""
-        doc.metadata["source"] = source
+    .repo-note {
+        color: #9ca3af;
+        font-size: 0.92rem;
+        margin-top: 0.25rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    return docs
+# ----------------------------
+# Helper functions
+# ----------------------------
+def get_repo_name(repo_url: str) -> str:
+    repo_url = repo_url.rstrip("/")
+    if repo_url:
+        return repo_url.split("/")[-1]
+    return ""
 
+def index_repository(repo_url: str) -> bool:
+    # TODO: Replace this with your real indexing logic
+    time.sleep(1.5)
+    return True
 
-def split_documents(docs):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
-    )
-    return splitter.split_documents(docs)
+def ask_repo(question: str) -> str:
+    # TODO: Replace this with your real RAG / LLM call
+    # This is a placeholder so the UI behaves nicely
+    return f"Demo response for: '{question}'\n\nConnect this function to your retrieval + LLM pipeline."
 
+def add_sample_prompt(prompt: str):
+    st.session_state.pending_prompt = prompt
 
-def create_vector_db(chunks):
-    embeddings = LocalSentenceTransformerEmbeddings()
-
-    if os.path.exists(CHROMA_PATH):
-        shutil.rmtree(CHROMA_PATH)
-
-    Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        persist_directory=CHROMA_PATH
-    )
-
-
-def ingest_repo(repo_url):
-    clone_repo(repo_url)
-    docs = load_documents()
-    chunks = split_documents(docs)
-    create_vector_db(chunks)
-    return len(docs), len(chunks)
-
-
-def ask_ollama(prompt):
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False
-        },
-        timeout=120
-    )
-    response.raise_for_status()
-    return response.json()["response"]
-
-
-def answer_question(question):
-    embeddings = LocalSentenceTransformerEmbeddings()
-
-    vectorstore = Chroma(
-        persist_directory=CHROMA_PATH,
-        embedding_function=embeddings,
-    )
-
-    docs = vectorstore.similarity_search(question, k=5)
-
-    sources = []
-    context_parts = []
-
-    for i, doc in enumerate(docs, start=1):
-        source = doc.metadata.get("source", "unknown")
-        if source not in sources:
-            sources.append(source)
-
-        snippet = doc.page_content[:4000]
-        context_parts.append(f"SOURCE {i}: {source}\n{snippet}")
-
-    context = "\n\n".join(context_parts)
-
-    prompt = f"""
-You are an AI assistant helping a developer understand a GitHub repository.
-
-Use ONLY the repository context below.
-
-Explain:
-1. what the project does
-2. how it works
-3. the role of the important files
-
-If the full answer is not obvious, give your best interpretation from the retrieved code and text.
-
-Question:
-{question}
-
-Repository Context:
-{context}
-
-At the end, include:
-Sources:
-- file1
-- file2
-"""
-
-    answer = ask_ollama(prompt)
-    return answer, sources
-
-
-st.set_page_config(page_title="GitHub Repo Chatbot", layout="wide")
-st.title("GitHub Repository Chatbot")
-
+# ----------------------------
+# Sidebar
+# ----------------------------
 with st.sidebar:
     st.header("Repository Setup")
-    repo_url = st.text_input("GitHub Repo URL")
-    if st.button("Index Repository"):
-        if not repo_url.strip():
-            st.error("Please enter a GitHub repository URL.")
-        else:
-            with st.spinner("Indexing repository..."):
-                try:
-                    doc_count, chunk_count = ingest_repo(repo_url.strip())
-                    st.success(f"Indexed {doc_count} files into {chunk_count} chunks.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
 
-st.subheader("Ask Questions")
-question = st.text_input("Ask about the repository")
+    repo_url = st.text_input(
+        "GitHub Repo URL",
+        value=st.session_state.repo_url,
+        placeholder="https://github.com/username/repository",
+    )
 
-if st.button("Ask"):
-    if not os.path.exists(CHROMA_PATH):
-        st.error("Please index a repository first.")
-    elif not question.strip():
-        st.error("Please enter a question.")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Index Repo", use_container_width=True):
+            if repo_url.strip():
+                st.session_state.repo_url = repo_url.strip()
+                repo_name = get_repo_name(repo_url.strip())
+                with st.spinner("Indexing repository..."):
+                    success = index_repository(repo_url.strip())
+                if success:
+                    st.session_state.repo_indexed = True
+                    st.session_state.indexed_repo_name = repo_name
+                    st.success(f"Indexed {repo_name}")
+                else:
+                    st.error("Indexing failed. Please try again.")
+            else:
+                st.warning("Please enter a GitHub repo URL first.")
+
+    with col2:
+        if st.button("Clear Chat", use_container_width=True):
+            st.session_state.messages = []
+            if "pending_prompt" in st.session_state:
+                del st.session_state.pending_prompt
+
+    st.markdown("---")
+
+    if st.session_state.repo_indexed:
+        st.markdown(
+            f"**Active Repo:** `{st.session_state.indexed_repo_name}`"
+        )
+        st.caption("Repository indexed and ready for questions.")
     else:
-        with st.spinner("Thinking..."):
-            try:
-                answer, sources = answer_question(question.strip())
-                st.markdown("### Answer")
-                st.write(answer)
+        st.caption("Index a repository first to start chatting.")
 
-                st.markdown("### Retrieved Sources")
-                for src in sources:
-                    st.code(src)
-            except Exception as e:
-                st.error(f"Error: {e}")
+# ----------------------------
+# Main content
+# ----------------------------
+st.markdown('<div class="main-title">GitHub Repository AI Chatbot</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="sub-title">Ask questions about a GitHub repository using a cleaner chat-style interface.</div>',
+    unsafe_allow_html=True,
+)
+
+if st.session_state.repo_indexed:
+    st.markdown(
+        '<div class="status-pill status-ready">Repo Indexed and Ready</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        '<div class="status-pill status-waiting">Waiting for Repository Index</div>',
+        unsafe_allow_html=True,
+    )
+
+st.markdown(
+    """
+    <div class="helper-card">
+        <strong>Try asking things like:</strong><br><br>
+        • What does this repo do?<br>
+        • Summarize the project architecture<br>
+        • What are the key files I should read first?<br>
+        • How does the authentication flow work?<br>
+        • What dependencies does this project use?
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+sample_cols = st.columns(3)
+with sample_cols[0]:
+    if st.button("What is this repo about?", use_container_width=True):
+        add_sample_prompt("What is this repo about?")
+with sample_cols[1]:
+    if st.button("Summarize the architecture", use_container_width=True):
+        add_sample_prompt("Summarize the architecture")
+with sample_cols[2]:
+    if st.button("Which files matter most?", use_container_width=True):
+        add_sample_prompt("Which files matter most?")
+
+# Render chat history
+if st.session_state.messages:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+else:
+    st.markdown(
+        '<div class="empty-state">No messages yet. Index a repository and ask your first question.</div>',
+        unsafe_allow_html=True,
+    )
+
+# Pick prompt from sample button if present
+default_prompt = ""
+if "pending_prompt" in st.session_state:
+    default_prompt = st.session_state.pending_prompt
+    del st.session_state.pending_prompt
+
+question = st.chat_input("Ask a question about the repository...")
+
+if default_prompt and not question:
+    question = default_prompt
+
+if question:
+    if not st.session_state.repo_indexed:
+        st.warning("Please index a repository before asking questions.")
+    else:
+        st.session_state.messages.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    response = ask_repo(question)
+                    st.markdown(response)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": response}
+                    )
+                except Exception:
+                    clean_error = (
+                        "I couldn't generate a response right now. "
+                        "Please check the model connection or try again."
+                    )
+                    st.error(clean_error)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": clean_error}
+                    )
