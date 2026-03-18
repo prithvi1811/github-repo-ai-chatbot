@@ -12,18 +12,12 @@ from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# ---------------------------------
-# App config
-# ---------------------------------
 st.set_page_config(
     page_title="GitHub Repository AI Chatbot",
     page_icon="🤖",
     layout="wide",
 )
 
-# ---------------------------------
-# Session state
-# ---------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "repo_indexed" not in st.session_state:
@@ -37,9 +31,6 @@ if "repo_id" not in st.session_state:
 if "vectorstore_ready" not in st.session_state:
     st.session_state.vectorstore_ready = False
 
-# ---------------------------------
-# Constants
-# ---------------------------------
 BASE_DIR = Path(__file__).parent.resolve()
 REPOS_DIR = BASE_DIR / "tmp_repos"
 CHROMA_DIR = BASE_DIR / "chroma_db"
@@ -60,12 +51,8 @@ IGNORED_DIRS = {
     ".pytest_cache", ".streamlit", "chroma_db", "tmp_repos",
 }
 
-MAX_FILE_SIZE_BYTES = 300_000  # ~300 KB per file to avoid huge blobs
+MAX_FILE_SIZE_BYTES = 300_000
 
-
-# ---------------------------------
-# Styling
-# ---------------------------------
 st.markdown(
     """
     <style>
@@ -131,9 +118,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------------------------------
-# Helpers
-# ---------------------------------
+
 def normalize_repo_url(repo_url: str) -> str:
     repo_url = repo_url.strip()
     if repo_url.endswith(".git"):
@@ -255,7 +240,7 @@ def build_vectorstore(repo_url: str):
         documents=split_docs,
         embedding=get_embeddings(),
         persist_directory=str(persist_dir),
-        collection_name="repo_docs",
+        collection_name=f"repo_docs_{rid}",
     )
 
     return rid, vectorstore, len(raw_docs), len(split_docs)
@@ -267,7 +252,7 @@ def load_vectorstore(repo_url: str):
         return None
 
     return Chroma(
-        collection_name="repo_docs",
+        collection_name=f"repo_docs_{rid}",
         persist_directory=str(persist_dir),
         embedding_function=get_embeddings(),
     )
@@ -283,13 +268,19 @@ def answer_question(question: str, repo_url: str) -> str:
         [f"FILE: {doc.metadata.get('source', 'unknown')}\n{doc.page_content}" for doc in docs]
     )
 
-    prompt = f"""
-You are a helpful AI assistant for understanding a GitHub repository.
+    repo_name = extract_repo_name(repo_url)
 
-Use the repository context below to answer the user's question.
+    prompt = f"""
+You are a helpful AI assistant for understanding the GitHub repository: {repo_name}.
+
+Answer ONLY using the repository context below.
 If the answer is not clearly supported by the context, say that you are not fully sure.
+Do not describe any other repository.
 Keep the answer practical and concise.
-When useful, mention relevant file names from the context.
+Mention relevant file names when useful.
+
+Repository Name:
+{repo_name}
 
 Repository Context:
 {context}
@@ -306,9 +297,6 @@ def queue_sample_prompt(prompt: str):
     st.session_state.pending_prompt = prompt
 
 
-# ---------------------------------
-# Sidebar
-# ---------------------------------
 with st.sidebar:
     st.header("Repository Setup")
 
@@ -333,12 +321,15 @@ with st.sidebar:
                     with st.spinner("Cloning, reading files, and building embeddings..."):
                         rid, _, raw_count, chunk_count = build_vectorstore(repo_input)
 
+                    st.session_state.messages = []
+                    if "pending_prompt" in st.session_state:
+                        del st.session_state.pending_prompt
+
                     st.session_state.repo_url = repo_input
                     st.session_state.repo_name = extract_repo_name(repo_input)
                     st.session_state.repo_id = rid
                     st.session_state.repo_indexed = True
                     st.session_state.vectorstore_ready = True
-                    st.session_state.messages = []
 
                     st.success(
                         f"Indexed {raw_count} files into {chunk_count} searchable chunks."
@@ -362,9 +353,6 @@ with st.sidebar:
     else:
         st.caption("Index a repository first to start chatting.")
 
-# ---------------------------------
-# Main content
-# ---------------------------------
 st.markdown(
     '<div class="main-title">GitHub Repository AI Chatbot</div>',
     unsafe_allow_html=True,
@@ -410,7 +398,6 @@ with sample_cols[2]:
     if st.button("Key files to read first", use_container_width=True):
         queue_sample_prompt("Which files should I read first and why?")
 
-# Render chat history
 if st.session_state.messages:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
