@@ -460,8 +460,11 @@ if question:
                     st.session_state.messages.append(
                         {"role": "assistant", "content": answer}
                     )
-                except Exception as e:
-                    print(f"answer_question failed: {e!r}")
+                except Exception:
+                    import traceback
+
+                    traceback.print_exc(file=sys.stderr)
+                    sys.stderr.flush()
                     clean_error = (
                         "I couldn't generate a response right now. "
                         "Please try again after re-indexing the repository."
