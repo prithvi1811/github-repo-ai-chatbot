@@ -435,7 +435,8 @@ if question:
                     st.session_state.messages.append(
                         {"role": "assistant", "content": answer}
                     )
-                except Exception:
+                except Exception as e:
+                    print(f"answer_question failed: {e!r}")
                     clean_error = (
                         "I couldn't generate a response right now. "
                         "Please try again after re-indexing the repository."
