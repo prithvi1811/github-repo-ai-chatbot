@@ -6,6 +6,7 @@ sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 import hashlib
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -33,6 +34,8 @@ if "repo_name" not in st.session_state:
     st.session_state.repo_name = ""
 if "repo_id" not in st.session_state:
     st.session_state.repo_id = ""
+if "persist_dir" not in st.session_state:
+    st.session_state.persist_dir = None
 if "vectorstore_ready" not in st.session_state:
     st.session_state.vectorstore_ready = False
 
@@ -143,8 +146,11 @@ def extract_repo_name(repo_url: str) -> str:
 def repo_paths(repo_url: str):
     rid = repo_hash(repo_url)
     local_repo_path = REPOS_DIR / rid
-    persist_dir = CHROMA_DIR / rid
-    return rid, local_repo_path, persist_dir
+    return rid, local_repo_path
+
+
+def new_persist_dir(rid: str) -> Path:
+    return CHROMA_DIR / f"{rid}_{uuid.uuid4().hex[:8]}"
 
 
 def is_text_file(path: Path) -> bool:
@@ -224,7 +230,7 @@ def get_llm():
 
 
 def build_vectorstore(repo_url: str):
-    rid, local_repo_path, persist_dir = repo_paths(repo_url)
+    rid, local_repo_path = repo_paths(repo_url)
 
     clone_repository(repo_url, local_repo_path)
     raw_docs = load_repo_documents(local_repo_path)
@@ -238,8 +244,11 @@ def build_vectorstore(repo_url: str):
     )
     split_docs = splitter.split_documents(raw_docs)
 
-    if persist_dir.exists():
-        shutil.rmtree(persist_dir)
+    # Always build in a fresh directory rather than deleting and reusing the
+    # previous one — chromadb's PersistentClient gets confused about its
+    # tenant/database bookkeeping if a path is removed and recreated while
+    # the app process is still running.
+    persist_dir = new_persist_dir(rid)
 
     vectorstore = Chroma.from_documents(
         documents=split_docs,
@@ -248,12 +257,15 @@ def build_vectorstore(repo_url: str):
         collection_name=f"repo_docs_{rid}",
     )
 
-    return rid, vectorstore, len(raw_docs), len(split_docs)
+    for stale_dir in CHROMA_DIR.glob(f"{rid}_*"):
+        if stale_dir != persist_dir:
+            shutil.rmtree(stale_dir, ignore_errors=True)
+
+    return rid, persist_dir, vectorstore, len(raw_docs), len(split_docs)
 
 
-def load_vectorstore(repo_url: str):
-    rid, _, persist_dir = repo_paths(repo_url)
-    if not persist_dir.exists():
+def load_vectorstore(rid: str, persist_dir: Path):
+    if persist_dir is None or not Path(persist_dir).exists():
         return None
 
     return Chroma(
@@ -263,8 +275,8 @@ def load_vectorstore(repo_url: str):
     )
 
 
-def answer_question(question: str, repo_url: str) -> str:
-    vectorstore = load_vectorstore(repo_url)
+def answer_question(question: str, repo_url: str, rid: str, persist_dir) -> str:
+    vectorstore = load_vectorstore(rid, persist_dir)
     if vectorstore is None:
         return "Please index the repository first."
 
@@ -324,7 +336,9 @@ with st.sidebar:
             else:
                 try:
                     with st.spinner("Cloning, reading files, and building embeddings..."):
-                        rid, _, raw_count, chunk_count = build_vectorstore(repo_input)
+                        rid, persist_dir, _, raw_count, chunk_count = build_vectorstore(
+                            repo_input
+                        )
 
                     st.session_state.messages = []
                     if "pending_prompt" in st.session_state:
@@ -333,6 +347,7 @@ with st.sidebar:
                     st.session_state.repo_url = repo_input
                     st.session_state.repo_name = extract_repo_name(repo_input)
                     st.session_state.repo_id = rid
+                    st.session_state.persist_dir = str(persist_dir)
                     st.session_state.repo_indexed = True
                     st.session_state.vectorstore_ready = True
 
@@ -435,7 +450,12 @@ if question:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    answer = answer_question(question, st.session_state.repo_url)
+                    answer = answer_question(
+                        question,
+                        st.session_state.repo_url,
+                        st.session_state.repo_id,
+                        st.session_state.persist_dir,
+                    )
                     st.markdown(answer)
                     st.session_state.messages.append(
                         {"role": "assistant", "content": answer}
