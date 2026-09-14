@@ -223,7 +223,7 @@ def get_embeddings():
 @st.cache_resource(show_spinner=False)
 def get_llm():
     return ChatGroq(
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         api_key=os.getenv("GROQ_API_KEY"),
         temperature=0,
     )
@@ -460,7 +460,7 @@ if question:
                     st.session_state.messages.append(
                         {"role": "assistant", "content": answer}
                     )
-                except Exception:
+                except Exception as e:
                     import traceback
 
                     traceback.print_exc(file=sys.stderr)
@@ -470,6 +470,8 @@ if question:
                         "Please try again after re-indexing the repository."
                     )
                     st.error(clean_error)
+                    with st.expander("Error details"):
+                        st.code(str(e))
                     st.session_state.messages.append(
                         {"role": "assistant", "content": clean_error}
                     )
